@@ -3,7 +3,7 @@
   "name": "LinkedIn Search Post Extractor",
   "version": "1.1.0",
   "description": "User-triggered extraction of LinkedIn content search posts with auto-scroll, deduplication, and XLSX export.",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "clipboardRead"],
   "host_permissions": ["https://www.linkedin.com/*"],
   "action": {
     "default_title": "LinkedIn Post Extractor",
