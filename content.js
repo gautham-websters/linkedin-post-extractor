@@ -195,100 +195,100 @@
     }).format(date);
   }
 
-  async function waitForCopyLinkMenuItem(timeout = 2500) {
-    const started = Date.now();
+  // async function waitForCopyLinkMenuItem(timeout = 2500) {
+  //   const started = Date.now();
 
-    while (Date.now() - started < timeout) {
-      const candidates = [
-        ...document.querySelectorAll(
-          '[role="menuitem"], button, div[role="button"], li',
-        ),
-      ];
+  //   while (Date.now() - started < timeout) {
+  //     const candidates = [
+  //       ...document.querySelectorAll(
+  //         '[role="menuitem"], button, div[role="button"], li',
+  //       ),
+  //     ];
 
-      const item = candidates.find((el) => {
-        const label = cleanText(
-          el.innerText || el.textContent || el.getAttribute("aria-label"),
-        ).toLowerCase();
+  //     const item = candidates.find((el) => {
+  //       const label = cleanText(
+  //         el.innerText || el.textContent || el.getAttribute("aria-label"),
+  //       ).toLowerCase();
 
-        return label.includes("copy link to post");
-      });
+  //       return label.includes("copy link to post");
+  //     });
 
-      if (item) return item;
+  //     if (item) return item;
 
-      await sleep(100);
-    }
+  //     await sleep(100);
+  //   }
 
-    return null;
-  }
+  //   return null;
+  // }
 
-  async function extractPostUrlFromMenu(root) {
-    const menuButton = root.querySelector(
-      'button[aria-label^="Open control menu for post by "]',
-    );
+  // async function extractPostUrlFromMenu(root) {
+  //   const menuButton = root.querySelector(
+  //     'button[aria-label^="Open control menu for post by "]',
+  //   );
 
-    if (!menuButton) {
-      return "";
-    }
+  //   if (!menuButton) {
+  //     return "";
+  //   }
 
-    try {
-      root.scrollIntoView({
-        behavior: "instant",
-        block: "center",
-      });
+  //   try {
+  //     root.scrollIntoView({
+  //       behavior: "instant",
+  //       block: "center",
+  //     });
 
-      await sleep(150);
+  //     await sleep(150);
 
-      menuButton.click();
+  //     menuButton.click();
 
-      const copyItem = await waitForCopyLinkMenuItem();
+  //     const copyItem = await waitForCopyLinkMenuItem();
 
-      if (!copyItem) {
-        try {
-          document.body.click();
-        } catch {}
+  //     if (!copyItem) {
+  //       try {
+  //         document.body.click();
+  //       } catch {}
 
-        return "";
-      }
+  //       return "";
+  //     }
 
-      copyItem.click();
+  //     copyItem.click();
 
-      await sleep(500);
+  //     await sleep(500);
 
-      const response = await chrome.runtime.sendMessage({
-        type: "LIEX_READ_CLIPBOARD",
-      });
+  //     const response = await chrome.runtime.sendMessage({
+  //       type: "LIEX_READ_CLIPBOARD",
+  //     });
 
-      if (!response?.ok) {
-        console.warn(
-          "[LinkedIn Extractor] Clipboard bridge failed:",
-          response?.error || "Unknown clipboard error",
-        );
+  //     if (!response?.ok) {
+  //       console.warn(
+  //         "[LinkedIn Extractor] Clipboard bridge failed:",
+  //         response?.error || "Unknown clipboard error",
+  //       );
 
-        return "";
-      }
+  //       return "";
+  //     }
 
-      const url = cleanText(response.text);
+  //     const url = cleanText(response.text);
 
-      if (
-        /^https:\/\/www\.linkedin\.com\//i.test(url) &&
-        (url.includes("/posts/") ||
-          url.includes("/feed/update/") ||
-          url.includes("urn:li:"))
-      ) {
-        return url;
-      }
+  //     if (
+  //       /^https:\/\/www\.linkedin\.com\//i.test(url) &&
+  //       (url.includes("/posts/") ||
+  //         url.includes("/feed/update/") ||
+  //         url.includes("urn:li:"))
+  //     ) {
+  //       return url;
+  //     }
 
-      return "";
-    } catch (error) {
-      console.warn("[LinkedIn Extractor] Could not extract post link:", error);
+  //     return "";
+  //   } catch (error) {
+  //     console.warn("[LinkedIn Extractor] Could not extract post link:", error);
 
-      try {
-        document.body.click();
-      } catch {}
+  //     try {
+  //       document.body.click();
+  //     } catch {}
 
-      return "";
-    }
-  }
+  //     return "";
+  //   }
+  // }
 
   function extractPostText(root) {
     return firstText(root, [
@@ -299,6 +299,230 @@
       '[data-view-name="feed-commentary"]',
       ".break-words",
     ]);
+  }
+
+  function getPostComponentKey(root) {
+    if (!root) return "";
+
+    /*
+     * New LinkedIn SDUI cards look like:
+     *
+     * expandedSoPMDy9IEHmkT11d7zqF5dvlZ3J1MiYG-RPK5c_PDm4FeedType_FLAGSHIP_SEARCH
+     *
+     * The useful key is:
+     *
+     * SoPMDy9IEHmkT11d7zqF5dvlZ3J1MiYG-RPK5c_PDm4
+     */
+
+    const candidates = [
+      root.getAttribute("componentkey"),
+      root.id,
+      ...[...root.querySelectorAll("[componentkey]")]
+        .slice(0, 20)
+        .map((el) => el.getAttribute("componentkey")),
+    ].filter(Boolean);
+
+    /*
+     * First preference:
+     * the outer search-result component key.
+     */
+    for (const candidate of candidates) {
+      const match = String(candidate).match(
+        /^expanded(.+?)FeedType_FLAGSHIP_SEARCH$/,
+      );
+
+      if (match?.[1]) {
+        return match[1];
+      }
+    }
+
+    /*
+     * Second preference:
+     * LinkedIn's raw long SDUI key.
+     *
+     * Avoid UUID component keys.
+     */
+    for (const candidate of candidates) {
+      const value = String(candidate);
+
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          value,
+        );
+
+      if (
+        !isUuid &&
+        value.length >= 25 &&
+        !value.includes("auto-component") &&
+        !value.includes("SearchResults_") &&
+        !value.includes("replaceableComment")
+      ) {
+        return value;
+      }
+    }
+
+    return "";
+  }
+
+  function findNearestActivityUrn(source, componentKey) {
+    if (!source || !componentKey) {
+      return "";
+    }
+
+    /*
+     * The same component key can appear multiple times in LinkedIn's
+     * hydrated page state, so inspect every occurrence and choose
+     * the nearest activity URN.
+     */
+    const keyPositions = [];
+
+    let position = source.indexOf(componentKey);
+
+    while (position !== -1) {
+      keyPositions.push(position);
+
+      position = source.indexOf(componentKey, position + componentKey.length);
+    }
+
+    if (!keyPositions.length) {
+      return "";
+    }
+
+    let bestUrn = "";
+    let bestDistance = Infinity;
+
+    for (const keyPosition of keyPositions) {
+      /*
+       * Large enough to contain the corresponding LinkedIn state
+       * object without accidentally searching the entire page.
+       */
+      const radius = 15000;
+
+      const start = Math.max(0, keyPosition - radius);
+
+      const end = Math.min(
+        source.length,
+        keyPosition + componentKey.length + radius,
+      );
+
+      const chunk = source.slice(start, end);
+
+      const localKeyPosition = keyPosition - start;
+
+      /*
+       * Normal unescaped activity URNs.
+       */
+      const activityRegex = /urn:li:activity:\d+/g;
+
+      let match;
+
+      while ((match = activityRegex.exec(chunk)) !== null) {
+        const distance = Math.abs(match.index - localKeyPosition);
+
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestUrn = match[0];
+        }
+      }
+
+      /*
+       * Occasionally LinkedIn state can contain URL encoded URNs.
+       */
+      const encodedRegex = /urn%3Ali%3Aactivity%3A\d+/gi;
+
+      while ((match = encodedRegex.exec(chunk)) !== null) {
+        const distance = Math.abs(match.index - localKeyPosition);
+
+        if (distance < bestDistance) {
+          bestDistance = distance;
+
+          try {
+            bestUrn = decodeURIComponent(match[0]);
+          } catch {
+            // Ignore malformed encoded values.
+          }
+        }
+      }
+    }
+
+    return bestUrn;
+  }
+
+  function extractActivityUrn(root) {
+    /*
+     * Method 1:
+     * Older LinkedIn layouts expose the activity URN directly.
+     */
+    const directUrn =
+      root.getAttribute("data-urn") ||
+      root.getAttribute("data-chameleon-result-urn") ||
+      "";
+
+    const directMatch = String(directUrn).match(/urn:li:activity:\d+/);
+
+    if (directMatch) {
+      return directMatch[0];
+    }
+
+    /*
+     * Method 2:
+     * Sometimes a direct feed/update anchor exists.
+     */
+    const directLink = root.querySelector(
+      'a[href*="/feed/update/urn:li:activity:"]',
+    );
+
+    if (directLink?.href) {
+      const match = directLink.href.match(/urn:li:activity:\d+/);
+
+      if (match) {
+        return match[0];
+      }
+    }
+
+    /*
+     * Method 3:
+     * Current 2026 LinkedIn SDUI search results.
+     *
+     * Match the rendered result's component key to the activity
+     * URN stored in LinkedIn's hydrated page state.
+     */
+    const componentKey = getPostComponentKey(root);
+
+    if (!componentKey) {
+      console.warn(
+        "[LinkedIn Extractor] No component key found for post:",
+        root,
+      );
+
+      return "";
+    }
+
+    /*
+     * innerHTML includes LinkedIn's hydration/state scripts.
+     */
+    const source = document.documentElement.innerHTML;
+
+    const activityUrn = findNearestActivityUrn(source, componentKey);
+
+    if (!activityUrn) {
+      console.warn(
+        "[LinkedIn Extractor] No activity URN mapped for component:",
+        componentKey,
+      );
+    }
+
+    return activityUrn;
+  }
+
+  function buildPostUrl(root) {
+    const activityUrn = extractActivityUrn(root);
+
+    if (!activityUrn) {
+      return "";
+    }
+
+    return "https://www.linkedin.com/feed/update/" + activityUrn + "/";
   }
 
   function isFeedPostRoot(el) {
@@ -382,6 +606,7 @@
 
   async function scrapeVisible(seenCards = new Set()) {
     const roots = candidateRoots();
+
     const out = [];
 
     for (const root of roots) {
@@ -392,39 +617,25 @@
       const calculatedDate = relativeTimeToDate(relativeTime);
 
       /*
-       * We still read the post text internally because it helps us
-       * identify the rendered card.
+       * Used internally only.
        *
-       * It is NOT exported to Excel.
+       * Post text is NOT exported.
        */
       const internalPostText = extractPostText(root);
 
-      /*
-       * LinkedIn's newer search result cards normally have a unique
-       * componentkey. Prefer that when available.
-       *
-       * This is ONLY used to stop us reopening the same visible card
-       * every time we scroll.
-       */
-      const componentKey =
-        root.getAttribute("componentkey") ||
-        root.querySelector("[componentkey]")?.getAttribute("componentkey") ||
-        "";
+      const componentKey = getPostComponentKey(root);
 
       /*
-       * Fallback card identity.
+       * Prefer LinkedIn's internal component key to identify
+       * the rendered card.
        *
-       * Notice that author/company is included.
-       * Therefore:
-       *
-       * Company A + same post text
-       * Company B + same post text
-       *
-       * are treated as TWO separate posts.
+       * Fall back to author + time + content if necessary.
        */
       const fallbackCardKey = [
         author.companyUrl || author.name,
+
         relativeTime,
+
         internalPostText.slice(0, 500),
       ]
         .filter(Boolean)
@@ -437,27 +648,28 @@
       }
 
       /*
-       * We have already processed this exact rendered LinkedIn card.
-       * Do not reopen the three-dot menu.
+       * Only stops us from processing the exact same rendered
+       * search result repeatedly while scrolling.
        */
       if (seenCards.has(cardKey)) {
         continue;
       }
 
-      /*
-       * Mark it BEFORE opening the menu.
-       *
-       * This prevents the same card being processed again on the
-       * next scroll pass even if link extraction fails.
-       */
       seenCards.add(cardKey);
 
       /*
-       * Three dots
-       * → Copy link to post
-       * → background/offscreen clipboard bridge
+       * NO CLIPBOARD.
+       * NO THREE-DOT MENU.
+       * NO USER FOCUS REQUIRED.
        */
-      const postUrl = await extractPostUrlFromMenu(root);
+      const postUrl = buildPostUrl(root);
+
+      console.log(
+        "[LinkedIn Extractor]",
+        author.name,
+        "→",
+        postUrl || "POST URL NOT FOUND",
+      );
 
       out.push({
         cardKey,
@@ -803,10 +1015,7 @@
         }
 
         /*
-         * Post URL is the REAL duplicate identifier.
-         *
-         * Same post text from another company/person is fine
-         * because its LinkedIn post URL will be different.
+         * Actual duplicate detection is by LinkedIn post URL.
          */
         if (p.postUrl) {
           if (token.seenPostUrls.has(p.postUrl)) {
@@ -818,12 +1027,6 @@
           token.seenPostUrls.add(p.postUrl);
         }
 
-        /*
-         * If URL extraction fails, still keep the post.
-         *
-         * seenCards already ensures this rendered result won't be
-         * added again during the same scrape.
-         */
         token.posts.push(p);
 
         added++;
