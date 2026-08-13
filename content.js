@@ -252,11 +252,22 @@
 
       copyItem.click();
 
-      await sleep(250);
+      await sleep(500);
 
-      const clipboardText = await navigator.clipboard.readText();
+      const response = await chrome.runtime.sendMessage({
+        type: "LIEX_READ_CLIPBOARD",
+      });
 
-      const url = cleanText(clipboardText);
+      if (!response?.ok) {
+        console.warn(
+          "[LinkedIn Extractor] Clipboard bridge failed:",
+          response?.error || "Unknown clipboard error",
+        );
+
+        return "";
+      }
+
+      const url = cleanText(response.text);
 
       if (
         /^https:\/\/www\.linkedin\.com\//i.test(url) &&
@@ -369,7 +380,7 @@
     });
   }
 
-  async function scrapeVisible(alreadySeen = new Set()) {
+  async function scrapeVisible(seenCards = new Set()) {
     const roots = candidateRoots();
     const out = [];
 
@@ -381,43 +392,75 @@
       const calculatedDate = relativeTimeToDate(relativeTime);
 
       /*
-       * Used internally for deduplication only.
+       * We still read the post text internally because it helps us
+       * identify the rendered card.
+       *
        * It is NOT exported to Excel.
        */
       const internalPostText = extractPostText(root);
 
-      const fingerprint = [
-        author.name,
-        author.companyUrl,
+      /*
+       * LinkedIn's newer search result cards normally have a unique
+       * componentkey. Prefer that when available.
+       *
+       * This is ONLY used to stop us reopening the same visible card
+       * every time we scroll.
+       */
+      const componentKey =
+        root.getAttribute("componentkey") ||
+        root.querySelector("[componentkey]")?.getAttribute("componentkey") ||
+        "";
+
+      /*
+       * Fallback card identity.
+       *
+       * Notice that author/company is included.
+       * Therefore:
+       *
+       * Company A + same post text
+       * Company B + same post text
+       *
+       * are treated as TWO separate posts.
+       */
+      const fallbackCardKey = [
+        author.companyUrl || author.name,
         relativeTime,
-        internalPostText.slice(0, 300),
+        internalPostText.slice(0, 500),
       ]
         .filter(Boolean)
         .join("|");
 
-      if (!fingerprint) {
-        continue;
-      }
+      const cardKey = componentKey || fallbackCardKey;
 
-      if (alreadySeen.has(fingerprint)) {
+      if (!cardKey) {
         continue;
       }
 
       /*
-       * Open LinkedIn:
+       * We have already processed this exact rendered LinkedIn card.
+       * Do not reopen the three-dot menu.
+       */
+      if (seenCards.has(cardKey)) {
+        continue;
+      }
+
+      /*
+       * Mark it BEFORE opening the menu.
        *
+       * This prevents the same card being processed again on the
+       * next scroll pass even if link extraction fails.
+       */
+      seenCards.add(cardKey);
+
+      /*
        * Three dots
        * → Copy link to post
-       *
-       * and capture the actual URL.
+       * → background/offscreen clipboard bridge
        */
       const postUrl = await extractPostUrlFromMenu(root);
 
-      const key = postUrl || fingerprint;
-
       out.push({
-        key,
-        fingerprint,
+        cardKey,
 
         postedBy: author.name,
 
@@ -690,8 +733,23 @@
     const token = {
       cancelled: false,
       paused: false,
+
       posts: [],
-      seen: new Set(),
+
+      /*
+       * Prevents reprocessing the same visible LinkedIn card
+       * while scrolling.
+       */
+      seenCards: new Set(),
+
+      /*
+       * Actual post deduplication.
+       *
+       * Two different people/companies posting identical content
+       * will have different URLs and will BOTH be exported.
+       */
+      seenPostUrls: new Set(),
+
       duplicates: 0,
       scrolls: 0,
     };
@@ -727,7 +785,15 @@
         break;
       }
 
-      const batch = await scrapeVisible(token.seen);
+      /*
+       * IMPORTANT:
+       *
+       * Use seenCards here.
+       *
+       * Your current file incorrectly still uses token.seen,
+       * even though token.seen no longer exists.
+       */
+      const batch = await scrapeVisible(token.seenCards);
 
       let added = 0;
 
@@ -736,16 +802,28 @@
           break;
         }
 
-        if (token.seen.has(p.key) || token.seen.has(p.fingerprint)) {
-          token.duplicates++;
+        /*
+         * Post URL is the REAL duplicate identifier.
+         *
+         * Same post text from another company/person is fine
+         * because its LinkedIn post URL will be different.
+         */
+        if (p.postUrl) {
+          if (token.seenPostUrls.has(p.postUrl)) {
+            token.duplicates++;
 
-          continue;
+            continue;
+          }
+
+          token.seenPostUrls.add(p.postUrl);
         }
 
-        token.seen.add(p.key);
-
-        token.seen.add(p.fingerprint);
-
+        /*
+         * If URL extraction fails, still keep the post.
+         *
+         * seenCards already ensures this rendered result won't be
+         * added again during the same scrape.
+         */
         token.posts.push(p);
 
         added++;
@@ -762,7 +840,7 @@
 
         message: batch.length
           ? `Collected ${token.posts.length} of ${target}`
-          : "No post cards detected on this pass; scrolling for more…",
+          : "No new post cards detected on this pass; scrolling for more…",
       });
 
       if (token.posts.length >= target) {
