@@ -1,0 +1,18 @@
+:root { font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif; color: #1f2937; }
+body { margin: 0; width: 340px; background: #f7f8fa; }
+main { padding: 18px; }
+h1 { font-size: 18px; margin: 0; }
+.sub { margin: 4px 0 16px; color: #6b7280; font-size: 12px; }
+label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+input { box-sizing: border-box; width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; font-size: 14px; background: white; }
+.keyword { margin-top: 12px; background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }
+.keyword span, .statusCard span { display: block; font-size: 11px; color: #6b7280; }
+.keyword strong { display: block; margin-top: 3px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusCard { margin: 12px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #e5e7eb; }
+.statusCard div { background: white; padding: 10px; }
+.statusCard strong { display: block; margin-top: 3px; font-size: 13px; }
+button { border: 1px solid #cbd5e1; background: white; border-radius: 8px; padding: 9px 10px; font-weight: 600; cursor: pointer; font-size: 12px; }
+button:disabled { opacity: .45; cursor: default; }
+.primary { width: 100%; background: #0a66c2; color: white; border-color: #0a66c2; font-size: 13px; }
+.row { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 7px; margin-top: 8px; }
+.note { color: #6b7280; font-size: 11px; line-height: 1.4; margin: 12px 0 0; }

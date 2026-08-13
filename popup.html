@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LinkedIn Post Extractor</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main>
+    <h1>LinkedIn Post Extractor</h1>
+    <p class="sub">User-triggered search result export</p>
+
+    <label for="target">Target posts</label>
+    <input id="target" type="number" min="1" max="5000" value="200" />
+
+    <div class="keyword"><span>Search</span><strong id="keyword">—</strong></div>
+
+    <div class="statusCard">
+      <div><span>Status</span><strong id="status">Ready</strong></div>
+      <div><span>Unique posts</span><strong id="unique">0 / 200</strong></div>
+      <div><span>Duplicates skipped</span><strong id="dupes">0</strong></div>
+      <div><span>Scrolls</span><strong id="scrolls">0</strong></div>
+    </div>
+
+    <button id="start" class="primary">Start Scrape</button>
+    <div class="row">
+      <button id="pause">Pause</button>
+      <button id="resume">Resume</button>
+      <button id="stop">Stop & Export</button>
+    </div>
+    <p id="note" class="note">Open a LinkedIn content search results page first.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Search Post Extractor",
+  "version": "1.0.0",
+  "description": "User-triggered extraction of LinkedIn content search posts with auto-scroll, deduplication, and XLSX export.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://www.linkedin.com/*"],
+  "action": {
+    "default_title": "LinkedIn Post Extractor",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/search/results/content/*"],
+      "js": ["minixlsx.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
