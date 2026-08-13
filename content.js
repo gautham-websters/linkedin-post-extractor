@@ -57,6 +57,11 @@
   }
 
   function extractAuthor(root) {
+    const postTextElement = root.querySelector(
+      '[data-testid="expandable-text-box"]',
+    );
+
+    /* Reposts contain a nested original actor. Keep the OUTER actor. */
     const menu = root.querySelector(
       'button[aria-label^="Open control menu for post by "]',
     );
@@ -73,31 +78,31 @@
       ]);
     }
 
-    const postTextElement = root.querySelector(
-      '[data-testid="expandable-text-box"]',
-    );
-
-    const allCompanyLinks = [
+    const actorLinks = [
       ...root.querySelectorAll(
-        'a[href*="linkedin.com/company/"], a[href^="/company/"]',
+        'a[href*="linkedin.com/company/"], a[href^="/company/"], a[href*="linkedin.com/in/"], a[href^="/in/"]',
       ),
     ];
 
-    const authorCompanyLink = allCompanyLinks.find((link) => {
+    const authorLink = actorLinks.find((link) => {
       if (!postTextElement) return true;
 
       return Boolean(
         link.compareDocumentPosition(postTextElement) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+          Node.DOCUMENT_POSITION_FOLLOWING,
       );
     });
 
-    let companyUrl = absoluteUrl(authorCompanyLink?.href || "");
+    let authorUrl = absoluteUrl(authorLink?.href || "");
+    authorUrl = authorUrl.replace(/\/posts\/?$/i, "/");
 
-    companyUrl = companyUrl.replace(/\/posts\/?$/i, "/");
+    const companyUrl = /linkedin\.com\/company\//i.test(authorUrl)
+      ? authorUrl
+      : "";
 
     return {
       name,
+      authorUrl,
       companyUrl,
     };
   }
@@ -301,6 +306,125 @@
     ]);
   }
 
+  function genericFeedUpdateAnchor(root) {
+    return root.querySelector(
+      [
+        'a[href*="/feed/update/urn:li:activity:"]',
+        'a[href*="/feed/update/urn:li:ugcPost:"]',
+        'a[href*="/feed/update/urn:li:share:"]',
+        'a[href*="urn%3Ali%3Aactivity%3A"]',
+        'a[href*="urn%3Ali%3AugcPost%3A"]',
+        'a[href*="urn%3Ali%3Ashare%3A"]',
+      ].join(","),
+    );
+  }
+
+  function isAfter(reference, node) {
+    if (!reference || !node) return false;
+    return Boolean(
+      reference.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  }
+
+  function isBefore(reference, node) {
+    if (!reference || !node) return false;
+    return Boolean(
+      reference.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING,
+    );
+  }
+
+  function actorNameFromLink(link) {
+    if (!link) return "";
+
+    let text = firstText(link, ["p", "span"]);
+
+    if (!text) {
+      text = cleanText(
+        link.querySelector("[aria-label]")?.getAttribute("aria-label") ||
+          link.getAttribute("aria-label"),
+      );
+    }
+
+    return text
+      .replace(/\s+Verified(?:\s+Profile)?(?:\s+\d(?:st|nd|rd|th)\+?)?.*$/i, "")
+      .replace(/\s+Profile(?:\s+\d(?:st|nd|rd|th)\+?)?.*$/i, "")
+      .trim();
+  }
+
+  function extractRepostMeta(root) {
+    const textBoxes = [
+      ...root.querySelectorAll('[data-testid="expandable-text-box"]'),
+    ];
+    const outerText = textBoxes[0] || null;
+
+    const feedLinks = [
+      ...root.querySelectorAll(
+        [
+          'a[href*="/feed/update/urn:li:activity:"]',
+          'a[href*="/feed/update/urn:li:ugcPost:"]',
+          'a[href*="/feed/update/urn:li:share:"]',
+        ].join(","),
+      ),
+    ];
+
+    const embeddedLink =
+      feedLinks.find((link) => {
+        if (!outerText || !isAfter(outerText, link)) return false;
+        return Boolean(link.querySelector('[data-testid="expandable-text-box"]'));
+      }) ||
+      feedLinks.find((link) => outerText && isAfter(outerText, link)) ||
+      null;
+
+    const isRepost = textBoxes.length > 1 || Boolean(embeddedLink);
+
+    if (!isRepost) {
+      return {
+        isRepost: false,
+        repostedFrom: "",
+        repostedFromUrl: "",
+        originalPostUrl: "",
+      };
+    }
+
+    let originalPostUrl = normalizeLinkedInPostUrl(
+      embeddedLink?.href || embeddedLink?.getAttribute("href") || "",
+    );
+
+    const actorLinks = [
+      ...root.querySelectorAll(
+        'a[href*="linkedin.com/company/"], a[href^="/company/"], a[href*="linkedin.com/in/"], a[href^="/in/"]',
+      ),
+    ].filter((link) => {
+      if (!outerText || !isAfter(outerText, link)) return false;
+      if (embeddedLink && !isBefore(embeddedLink, link)) return false;
+      return true;
+    });
+
+    const originalActorLink =
+      [...actorLinks].reverse().find((link) => actorNameFromLink(link)) ||
+      actorLinks.at(-1) ||
+      null;
+
+    let repostedFromUrl = absoluteUrl(originalActorLink?.href || "");
+    repostedFromUrl = repostedFromUrl.replace(/\/posts\/?$/i, "/");
+
+    const repostedFrom = actorNameFromLink(originalActorLink);
+
+    if (!originalPostUrl && outerText) {
+      const fallback = feedLinks.find((link) => isAfter(outerText, link));
+      originalPostUrl = normalizeLinkedInPostUrl(
+        fallback?.href || fallback?.getAttribute("href") || "",
+      );
+    }
+
+    return {
+      isRepost: true,
+      repostedFrom,
+      repostedFromUrl,
+      originalPostUrl,
+    };
+  }
+
   function getPostComponentKey(root) {
     if (!root) return "";
 
@@ -400,9 +524,7 @@
   }
 
   function directFeedUpdateUrl(root) {
-    const anchor = root.querySelector(
-      'a[href*="/feed/update/urn:li:activity:"], a[href*="urn%3Ali%3Aactivity%3A"]',
-    );
+    const anchor = genericFeedUpdateAnchor(root);
 
     return normalizeLinkedInPostUrl(anchor?.href || anchor?.getAttribute("href"));
   }
@@ -537,8 +659,8 @@
       const localKeyPosition = keyPosition - start;
 
       const patterns = [
-        /urn:li:activity:\d+/g,
-        /urn%3Ali%3Aactivity%3A\d+/gi,
+        /urn:li:(?:activity|ugcPost|share):\d+/g,
+        /urn%3Ali%3A(?:activity|ugcPost|share)%3A\d+/gi,
       ];
 
       for (const regex of patterns) {
@@ -556,7 +678,7 @@
               // Keep the original match.
             }
 
-            if (/^urn:li:activity:\d+$/i.test(urn)) {
+            if (/^urn:li:(?:activity|ugcPost|share):\d+$/i.test(urn)) {
               bestDistance = distance;
               bestUrn = urn;
             }
@@ -613,7 +735,7 @@
       root.getAttribute("data-chameleon-result-urn") ||
       "";
 
-    const directMatch = String(directUrn).match(/urn:li:activity:\d+/);
+    const directMatch = String(directUrn).match(/urn:li:(?:activity|ugcPost|share):\d+/);
 
     if (directMatch) {
       return directMatch[0];
@@ -622,7 +744,7 @@
     const feedUrl = directFeedUpdateUrl(root);
 
     if (feedUrl) {
-      const match = feedUrl.match(/urn:li:activity:\d+/);
+      const match = feedUrl.match(/urn:li:(?:activity|ugcPost|share):\d+/);
 
       if (match) {
         return match[0];
@@ -642,6 +764,11 @@
       Math.random().toString(36).slice(2, 10);
 
     root.setAttribute("data-liex-request-id", requestId);
+    root.setAttribute("data-liex-component-key", getPostComponentKey(root) || "");
+    root.setAttribute(
+      "data-liex-is-repost",
+      extractRepostMeta(root).isRepost ? "1" : "0",
+    );
 
     return new Promise((resolve) => {
       let settled = false;
@@ -650,6 +777,8 @@
         root.removeEventListener("liex-post-url-ready", onReady);
         root.removeAttribute("data-liex-request-id");
         root.removeAttribute("data-liex-post-url");
+        root.removeAttribute("data-liex-component-key");
+        root.removeAttribute("data-liex-is-repost");
       };
 
       const finish = (value) => {
@@ -680,48 +809,54 @@
     });
   }
 
-  async function buildPostUrl(root) {
-    /* 1) Older/current layouts may expose a canonical URL directly. */
-    const directCanonical = directCanonicalPostUrl(root);
+  async function buildPostUrl(root, repostMeta = null) {
+    const repost = repostMeta || extractRepostMeta(root);
 
-    if (directCanonical) {
-      return directCanonical;
-    }
+    const firstTextBox = root.querySelector('[data-testid="expandable-text-box"]');
+    const directCanonicalAnchors = [
+      ...root.querySelectorAll(
+        'a[href*="linkedin.com/posts/"], a[href^="/posts/"]',
+      ),
+    ];
 
-    /*
-     * 2) Best non-interactive path for the supplied 2026 LinkedIn markup:
-     * LinkedIn embeds the actual /posts/... URL as postSlugUrl in its page
-     * state, associated with the same SDUI component key as the rendered card.
-     */
+    /* Avoid mistaking the embedded ORIGINAL /posts/ URL for the repost URL. */
+    const safeDirectCanonical = repost.isRepost
+      ? directCanonicalAnchors.find(
+          (anchor) =>
+            !firstTextBox ||
+            Boolean(
+              anchor.compareDocumentPosition(firstTextBox) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+            ),
+        )
+      : directCanonicalAnchors[0];
+
+    const directCanonical = normalizeLinkedInPostUrl(
+      safeDirectCanonical?.href || safeDirectCanonical?.getAttribute("href"),
+    );
+
+    if (directCanonical) return directCanonical;
+
+    /* Best chance of resolving the OUTER repost/search-result permalink. */
     const stateSlug = postUrlFromPageState(root);
+    if (stateSlug) return stateSlug;
 
-    if (stateSlug) {
-      return stateSlug;
-    }
-
-    /*
-     * 3) If React has already consumed/removed the hydration payload, ask the
-     * MAIN-world bridge to inspect the page's live React props/fiber data.
-     */
     const mainWorldUrl = await postUrlFromMainWorld(root);
-
     if (mainWorldUrl) {
-      return mainWorldUrl;
+      if (!repost.isRepost || mainWorldUrl !== repost.originalPostUrl) {
+        return mainWorldUrl;
+      }
     }
 
-    /* 4) A direct /feed/update/ link is still a valid LinkedIn permalink. */
+    /* Repost fallback: never leave Post URL blank if the original is linked. */
+    if (repost.isRepost && repost.originalPostUrl) {
+      return repost.originalPostUrl;
+    }
+
     const directFeed = directFeedUpdateUrl(root);
+    if (directFeed) return directFeed;
 
-    if (directFeed) {
-      return directFeed;
-    }
-
-    /*
-     * 5) Last fallback: map the card to an activity URN and construct the
-     * LinkedIn feed/update permalink. No menu clicking or clipboard required.
-     */
     const activityUrn = extractActivityUrn(root);
-
     if (activityUrn) {
       return "https://www.linkedin.com/feed/update/" + activityUrn + "/";
     }
@@ -816,6 +951,8 @@
     for (const root of roots) {
       const author = extractAuthor(root);
 
+      const repost = extractRepostMeta(root);
+
       const relativeTime = extractTime(root);
 
       const calculatedDate = relativeTimeToDate(relativeTime);
@@ -866,7 +1003,7 @@
        * NO THREE-DOT MENU.
        * NO USER FOCUS REQUIRED.
        */
-      const postUrl = await buildPostUrl(root);
+      const postUrl = await buildPostUrl(root, repost);
 
       console.log(
         "[LinkedIn Extractor]",
@@ -880,7 +1017,17 @@
 
         postedBy: author.name,
 
+        postedByUrl: author.authorUrl,
+
         companyPageUrl: author.companyUrl,
+
+        postType: repost.isRepost ? "Repost" : "Post",
+
+        repostedFrom: repost.repostedFrom,
+
+        repostedFromUrl: repost.repostedFromUrl,
+
+        originalPostUrl: repost.originalPostUrl,
 
         postedDate: formatPostedDate(calculatedDate),
 
@@ -1045,10 +1192,15 @@
     const headers = [
       "#",
       "Posted By",
+      "Posted By URL",
       "Company Page URL",
+      "Post Type",
+      "Reposted From",
+      "Reposted From URL",
       "Posted Date",
       "Posted Time",
       "Post URL",
+      "Original Post URL",
       "Search Keyword",
       "Collected At",
     ];
@@ -1059,10 +1211,15 @@
       ...posts.map((p, i) => [
         i + 1,
         p.postedBy,
+        p.postedByUrl,
         p.companyPageUrl,
+        p.postType,
+        p.repostedFrom,
+        p.repostedFromUrl,
         p.postedDate,
         p.postedTime,
         p.postUrl,
+        p.originalPostUrl,
         p.searchKeyword,
         p.collectedAt,
       ]),
@@ -1222,13 +1379,18 @@
          * Actual duplicate detection is by LinkedIn post URL.
          */
         if (p.postUrl) {
-          if (token.seenPostUrls.has(p.postUrl)) {
+          const dedupeKey =
+            p.postType === "Repost"
+              ? `repost:${p.cardKey}`
+              : `post:${p.postUrl}`;
+
+          if (token.seenPostUrls.has(dedupeKey)) {
             token.duplicates++;
 
             continue;
           }
 
-          token.seenPostUrls.add(p.postUrl);
+          token.seenPostUrls.add(dedupeKey);
         }
 
         token.posts.push(p);

@@ -31,14 +31,14 @@
     }
 
     const feed = text.match(
-      /https:\/\/www\.linkedin\.com\/feed\/update\/urn:li:activity:\d+\/?/i,
+      /https:\/\/www\.linkedin\.com\/feed\/update\/urn:li:(?:activity|ugcPost|share):\d+\/?/i,
     );
 
     if (feed?.[0]) {
       return feed[0].replace(/[\\"'<>),;]+$/g, "").split("?")[0];
     }
 
-    const urn = text.match(/urn:li:activity:\d+/i);
+    const urn = text.match(/urn:li:(?:activity|ugcPost|share):\d+/i);
 
     if (urn?.[0]) {
       return "https://www.linkedin.com/feed/update/" + urn[0] + "/";
@@ -50,7 +50,7 @@
   function candidateRank(url) {
     if (!url) return 0;
     if (/linkedin\.com\/posts\//i.test(url)) return 3;
-    if (/linkedin\.com\/feed\/update\/urn:li:activity:/i.test(url)) return 2;
+    if (/linkedin\.com\/feed\/update\/urn:li:(?:activity|ugcPost|share):/i.test(url)) return 2;
     return 1;
   }
 
@@ -190,7 +190,14 @@
       visited: 0,
     };
 
-    const nodes = [root];
+    /* Inspect the OUTER search-result node before nested repost content. */
+    inspectReactNode(root, state);
+
+    if (state.best && candidateRank(state.best) === 3) {
+      return state.best;
+    }
+
+    const nodes = [];
 
     try {
       nodes.push(
@@ -199,10 +206,9 @@
         ),
       );
     } catch {
-      // Root alone is still worth inspecting.
+      // Root inspection above may still have found a useful candidate.
     }
 
-    /* Most useful React handles are near the post card; cap work per request. */
     for (const node of nodes.slice(0, 90)) {
       inspectReactNode(node, state);
 
