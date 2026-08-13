@@ -37,6 +37,45 @@
     catch { return href; }
   }
 
+  function getRootComponentKey(root) {
+    const candidates = [root, ...root.querySelectorAll('[componentkey]')];
+    for (const el of candidates) {
+      const value = el.getAttribute?.('componentkey') || '';
+      let m = value.match(/^expanded(.+?)FeedType_FLAGSHIP_SEARCH$/);
+      if (m) return m[1];
+      // LinkedIn also repeats the raw feed key on an inner wrapper.
+      if (value && !/^auto-component-/i.test(value) && value.length > 25 && !value.includes('Ref')) {
+        const menu = root.querySelector('button[aria-label^="Open control menu for post by "]');
+        if (menu && value === menu.closest('[componentkey]')?.getAttribute('componentkey')) continue;
+      }
+    }
+    const expanded = root.getAttribute?.('componentkey') || '';
+    const m = expanded.match(/^expanded(.+?)FeedType_FLAGSHIP_SEARCH$/);
+    return m ? m[1] : '';
+  }
+
+  function pageSourceText() {
+    // LinkedIn's new SDUI search cards do not expose the activity URN on the
+    // rendered card.  The URN is, however, present in the embedded page state.
+    return document.documentElement.innerHTML || '';
+  }
+
+  function activityIdFromComponentKey(componentKey) {
+    if (!componentKey) return '';
+    const source = pageSourceText();
+    const escaped = componentKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const patterns = [
+      new RegExp(`TranslationState-null${escaped}[\\s\\S]{0,1600}?reactionState-urn:li:activity:(\\d+)`, 'i'),
+      new RegExp(`reactionState-urn:li:activity:(\\d+)[\\s\\S]{0,1600}?UpdateState${escaped}`, 'i'),
+      new RegExp(`${escaped}[\\s\\S]{0,2200}?urn:li:activity:(\\d+)`, 'i')
+    ];
+    for (const re of patterns) {
+      const m = source.match(re);
+      if (m) return m[1];
+    }
+    return '';
+  }
+
   function extractActivityId(root) {
     const attrs = ['data-urn', 'data-chameleon-result-urn', 'data-id'];
     const nodes = [root, ...root.querySelectorAll('[data-urn],[data-chameleon-result-urn],[data-id]')];
@@ -53,7 +92,10 @@
       const m = h.match(/(?:activity|urn:li:activity:)(\d{8,})/i) || h.match(/posts\/[^?]*-(\d{8,})-[^/?#]+/i);
       if (m) return m[1];
     }
-    return '';
+
+    // 2026 LinkedIn search UI fallback: map the SDUI component key to the
+    // activity URN stored in the page's serialized state.
+    return activityIdFromComponentKey(getRootComponentKey(root));
   }
 
   function findPostUrl(root, activityId) {
@@ -75,20 +117,37 @@
   }
 
   function extractAuthor(root) {
-    let name = firstText(root, [
-      '.update-components-actor__name',
-      '.update-components-actor__title span[aria-hidden="true"]',
-      '.feed-shared-actor__name',
-      '.entity-result__title-text a span[aria-hidden="true"]',
-      '[data-view-name="feed-actor-name"]',
-      'a[href*="/in/"] span[aria-hidden="true"]',
-      'a[href*="/company/"] span[aria-hidden="true"]'
-    ]);
+    // The new LinkedIn search UI gives us a stable accessible label here.
+    const menu = root.querySelector('button[aria-label^="Open control menu for post by "]');
+    let name = cleanText(menu?.getAttribute('aria-label')).replace(/^Open control menu for post by\s+/i, '');
+
+    if (!name) {
+      name = firstText(root, [
+        '.update-components-actor__name',
+        '.update-components-actor__title span[aria-hidden="true"]',
+        '.feed-shared-actor__name',
+        '.entity-result__title-text a span[aria-hidden="true"]',
+        '[data-view-name="feed-actor-name"]',
+        'a[href*="/in/"] span[aria-hidden="true"]',
+        'a[href*="/company/"] span[aria-hidden="true"]',
+        'a[href*="/in/"] p',
+        'a[href*="/company/"] p'
+      ]);
+    }
     name = name.replace(/\s*•\s*\d+(?:st|nd|rd|th)?\s*$/i, '').trim();
 
-    const profile = root.querySelector('a[href*="linkedin.com/in/"],a[href^="/in/"]');
-    const company = root.querySelector('a[href*="linkedin.com/company/"],a[href^="/company/"]');
-    const posterType = company && !profile ? 'Company' : profile ? 'Person' : '';
+    // Prefer the author links near the beginning of the card.  Mentioned people
+    // and companies inside post text can otherwise be mistaken for the author.
+    const profileLinks = [...root.querySelectorAll('a[href*="linkedin.com/in/"],a[href^="/in/"]')];
+    const companyLinks = [...root.querySelectorAll('a[href*="linkedin.com/company/"],a[href^="/company/"]')];
+    const profile = profileLinks[0];
+    const company = companyLinks.find(a => /\/posts\/?(?:\?|$)/i.test(a.getAttribute('href') || a.href || '')) || companyLinks[0];
+
+    let posterType = '';
+    if (company && /\/posts\/?(?:\?|$)/i.test(company.getAttribute('href') || company.href || '')) posterType = 'Company';
+    else if (profile) posterType = 'Person';
+    else if (company) posterType = 'Company';
+
     return { name, posterType, profileUrl: absoluteUrl(profile?.href), companyUrl: absoluteUrl(company?.href) };
   }
 
@@ -108,33 +167,53 @@
         if (el.tagName === 'TIME' && t) return t;
       }
     }
-    const text = cleanText(root.innerText);
-    const m = text.match(/(?:^|\s)(\d+\s*(?:m|h|d|w|mo|yr))(?:\s|•)/i);
+
+    // New SDUI search result cards render e.g. "1h •" as ordinary paragraph text.
+    const text = cleanText(root.innerText || root.textContent);
+    const m = text.match(/(?:^|\s)(\d+\s*(?:s|m|h|d|w|mo|yr))\s*•/i)
+      || text.match(/(?:^|\s)(\d+\s*(?:s|m|h|d|w|mo|yr))(?:\s|$)/i);
     return m ? m[1].replace(/\s+/g, '') : '';
   }
 
   function extractPostText(root) {
-    const text = firstText(root, [
+    return firstText(root, [
+      '[data-testid="expandable-text-box"]',
       '.update-components-text',
       '.feed-shared-update-v2__description',
       '.feed-shared-text',
       '[data-view-name="feed-commentary"]',
       '.break-words'
     ]);
-    return text;
   }
 
   function extractSecondary(root) {
-    const subtitle = firstText(root, [
+    return firstText(root, [
       '.update-components-actor__description',
       '.feed-shared-actor__description',
       '.entity-result__primary-subtitle'
     ]);
-    return subtitle;
+  }
+
+  function isFeedPostRoot(el) {
+    if (!el) return false;
+    if (el.matches?.('[role="listitem"]')) {
+      if (el.querySelector('[data-testid="expandable-text-box"]')) return true;
+      if (el.querySelector('button[aria-label^="Open control menu for post by "]')) return true;
+      const heading = cleanText(el.querySelector('h2')?.innerText || el.querySelector('h2')?.textContent);
+      if (/^Feed post$/i.test(heading)) return true;
+    }
+    return false;
   }
 
   function candidateRoots() {
     const set = new Set();
+
+    // Current (2026) LinkedIn SDUI search markup.
+    document.querySelectorAll('[role="listitem"]').forEach(el => {
+      if (isFeedPostRoot(el)) set.add(el);
+    });
+
+    // Older LinkedIn feed/search markup fallbacks.
     const direct = document.querySelectorAll([
       'div[data-urn^="urn:li:activity:"]',
       'div[data-chameleon-result-urn^="urn:li:activity:"]',
@@ -144,13 +223,14 @@
     direct.forEach(el => set.add(el));
 
     document.querySelectorAll('a[href*="/feed/update/urn:li:activity:"],a[href*="linkedin.com/posts/"]').forEach(a => {
-      const root = a.closest('div[data-urn], div[data-chameleon-result-urn], .feed-shared-update-v2, li.reusable-search__result-container, [data-view-name="search-entity-result-universal-template"], li') || a.parentElement;
+      const root = a.closest('[role="listitem"], div[data-urn], div[data-chameleon-result-urn], .feed-shared-update-v2, li.reusable-search__result-container, [data-view-name="search-entity-result-universal-template"], li') || a.parentElement;
       if (root) set.add(root);
     });
 
     return [...set].filter(el => {
       const rect = el.getBoundingClientRect();
-      return rect.height > 80 && cleanText(el.innerText).length > 20;
+      const text = cleanText(el.innerText || el.textContent);
+      return rect.height > 80 && text.length > 20;
     });
   }
 
@@ -164,9 +244,15 @@
       const postText = extractPostText(root);
       const time = extractTime(root);
       const secondary = extractSecondary(root);
+      const componentKey = getRootComponentKey(root);
 
-      if (!activityId && !postUrl) continue;
-      const key = activityId || postUrl;
+      // The new search UI may briefly render a card before its state payload is
+      // available.  In that case use a deterministic card fingerprint so the
+      // post can still be captured rather than silently discarded.
+      const fingerprint = [componentKey, author.name, time, postText.slice(0, 240)].filter(Boolean).join('|');
+      const key = activityId || postUrl || fingerprint;
+      if (!key || !postText) continue;
+
       out.push({
         key,
         activityId,
@@ -185,6 +271,39 @@
     return out;
   }
 
+  function getScrollTarget() {
+    const seed = document.querySelector('[data-testid="lazy-column"]') || document.querySelector('main#workspace') || document.body;
+    let el = seed;
+    while (el && el !== document.body && el !== document.documentElement) {
+      const style = getComputedStyle(el);
+      const oy = style.overflowY;
+      if (/(auto|scroll)/.test(oy) && el.scrollHeight > el.clientHeight + 120) return el;
+      el = el.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function scrollMetrics(target) {
+    const docScroll = target === document.scrollingElement || target === document.documentElement || target === document.body;
+    return {
+      height: docScroll ? document.documentElement.scrollHeight : target.scrollHeight,
+      top: docScroll ? (window.scrollY || document.documentElement.scrollTop || 0) : target.scrollTop,
+      client: docScroll ? window.innerHeight : target.clientHeight
+    };
+  }
+
+  function scrollByTarget(target, amount) {
+    const docScroll = target === document.scrollingElement || target === document.documentElement || target === document.body;
+    if (docScroll) window.scrollBy({ top: amount, behavior: 'smooth' });
+    else target.scrollBy({ top: amount, behavior: 'smooth' });
+  }
+
+  function scrollToBottom(target) {
+    const docScroll = target === document.scrollingElement || target === document.documentElement || target === document.body;
+    if (docScroll) window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+    else target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' });
+  }
+
   async function saveState(patch) {
     const state = { ...(await chrome.storage.local.get(STATE_KEY))[STATE_KEY], ...patch };
     await chrome.storage.local.set({ [STATE_KEY]: state });
@@ -192,7 +311,7 @@
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  async function waitForGrowth(beforeHeight, beforeCount) {
+  async function waitForGrowth(scrollTarget, beforeHeight, beforeCount) {
     const started = Date.now();
     return new Promise(resolve => {
       let done = false;
@@ -205,7 +324,7 @@
         resolve(grew);
       };
       const check = () => {
-        const grew = document.documentElement.scrollHeight > beforeHeight + 100 || candidateRoots().length > beforeCount;
+        const grew = scrollMetrics(scrollTarget).height > beforeHeight + 100 || candidateRoots().length > beforeCount;
         if (grew) finish(true);
         else if (Date.now() - started > LOAD_WAIT_MS) finish(false);
       };
@@ -277,18 +396,20 @@
         added++;
       }
 
-      await saveState({ unique: token.posts.length, duplicates: token.duplicates, scrolls: token.scrolls, status: token.paused ? 'paused' : 'running', message: `Collected ${token.posts.length} of ${target}` });
+      await saveState({ unique: token.posts.length, duplicates: token.duplicates, scrolls: token.scrolls, status: token.paused ? 'paused' : 'running', message: batch.length ? `Collected ${token.posts.length} of ${target}` : 'No post cards detected on this pass; scrolling for more…' });
       if (token.posts.length >= target) break;
 
-      const beforeHeight = document.documentElement.scrollHeight;
+      const scrollTarget = getScrollTarget();
+      const beforeMetrics = scrollMetrics(scrollTarget);
+      const beforeHeight = beforeMetrics.height;
       const beforeCount = candidateRoots().length;
-      window.scrollBy({ top: Math.max(window.innerHeight * 0.85, 650), behavior: 'smooth' });
+      scrollByTarget(scrollTarget, Math.max(beforeMetrics.client * 0.88, 650));
       token.scrolls++;
-      let grew = await waitForGrowth(beforeHeight, beforeCount);
+      let grew = await waitForGrowth(scrollTarget, beforeHeight, beforeCount);
       if (!grew) {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+        scrollToBottom(scrollTarget);
         await sleep(EXTRA_WAIT_MS);
-        grew = document.documentElement.scrollHeight > beforeHeight + 100 || candidateRoots().length > beforeCount;
+        grew = scrollMetrics(scrollTarget).height > beforeHeight + 100 || candidateRoots().length > beforeCount;
       }
 
       staleRounds = (added === 0 && !grew) ? staleRounds + 1 : 0;

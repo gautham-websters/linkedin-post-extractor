@@ -48,3 +48,7 @@ LinkedIn changes its page structure regularly. The extractor uses several select
 The extension only starts after a user action. Keep the LinkedIn search tab open while it runs. Very large targets depend on how many results LinkedIn actually makes available to the signed-in user.
 
 LinkedIn's terms and help materials restrict scraping/automation tools. Use this extension only in a way that complies with the rules and permissions applicable to your account and data.
+
+
+## Version 1.1
+Updated for LinkedIn's 2026 SDUI content-search markup (`role="listitem"`, `data-testid="expandable-text-box"`). Activity IDs are mapped from LinkedIn's embedded page state so canonical `/feed/update/urn:li:activity:.../` links can be exported even when the search card does not directly contain them.
