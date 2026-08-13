@@ -305,27 +305,20 @@
     if (!root) return "";
 
     /*
-     * New LinkedIn SDUI cards look like:
+     * Current LinkedIn SDUI search cards commonly use an outer key like:
      *
      * expandedSoPMDy9IEHmkT11d7zqF5dvlZ3J1MiYG-RPK5c_PDm4FeedType_FLAGSHIP_SEARCH
      *
-     * The useful key is:
-     *
-     * SoPMDy9IEHmkT11d7zqF5dvlZ3J1MiYG-RPK5c_PDm4
+     * The useful per-post key is the middle section.
      */
-
     const candidates = [
       root.getAttribute("componentkey"),
       root.id,
-      ...[...root.querySelectorAll("[componentkey]")]
-        .slice(0, 20)
-        .map((el) => el.getAttribute("componentkey")),
+      ...[...root.querySelectorAll("[componentkey]")].map((el) =>
+        el.getAttribute("componentkey"),
+      ),
     ].filter(Boolean);
 
-    /*
-     * First preference:
-     * the outer search-result component key.
-     */
     for (const candidate of candidates) {
       const match = String(candidate).match(
         /^expanded(.+?)FeedType_FLAGSHIP_SEARCH$/,
@@ -337,10 +330,8 @@
     }
 
     /*
-     * Second preference:
-     * LinkedIn's raw long SDUI key.
-     *
-     * Avoid UUID component keys.
+     * Some cards expose the bare SDUI key on a child element instead.
+     * Avoid UUID component keys and generic framework keys.
      */
     for (const candidate of candidates) {
       const value = String(candidate);
@@ -355,7 +346,8 @@
         value.length >= 25 &&
         !value.includes("auto-component") &&
         !value.includes("SearchResults_") &&
-        !value.includes("replaceableComment")
+        !value.includes("replaceableComment") &&
+        !value.includes("FeedType_FLAGSHIP_SEARCH")
       ) {
         return value;
       }
@@ -364,82 +356,210 @@
     return "";
   }
 
-  function findNearestActivityUrn(source, componentKey) {
-    if (!source || !componentKey) {
+  function normalizeLinkedInPostUrl(value) {
+    if (!value) return "";
+
+    let url = String(value)
+      .replace(/\\u003a/gi, ":")
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\u002d/gi, "-")
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/g, "&")
+      .trim();
+
+    /* Remove JSON/HTML escaping or punctuation that can trail a match. */
+    url = url.replace(/[\\"'<>),;]+$/g, "");
+
+    if (url.startsWith("/")) {
+      url = new URL(url, location.origin).href;
+    }
+
+    if (!/^https:\/\/www\.linkedin\.com\//i.test(url)) {
       return "";
     }
 
+    try {
+      const parsed = new URL(url);
+
+      /* Tracking query strings are not needed for a permalink. */
+      parsed.search = "";
+      parsed.hash = "";
+
+      return parsed.href;
+    } catch {
+      return url.split("?")[0];
+    }
+  }
+
+  function directCanonicalPostUrl(root) {
+    const anchor = root.querySelector(
+      'a[href*="linkedin.com/posts/"], a[href^="/posts/"]',
+    );
+
+    return normalizeLinkedInPostUrl(anchor?.href || anchor?.getAttribute("href"));
+  }
+
+  function directFeedUpdateUrl(root) {
+    const anchor = root.querySelector(
+      'a[href*="/feed/update/urn:li:activity:"], a[href*="urn%3Ali%3Aactivity%3A"]',
+    );
+
+    return normalizeLinkedInPostUrl(anchor?.href || anchor?.getAttribute("href"));
+  }
+
+  function pageStateSources() {
+    const sources = [];
+
     /*
-     * The same component key can appear multiple times in LinkedIn's
-     * hydrated page state, so inspect every occurrence and choose
-     * the nearest activity URN.
+     * LinkedIn's initial SDUI/RSC payload is frequently retained in script
+     * elements. script.textContent is preferable because it avoids reparsing
+     * the entire visible DOM for every card.
      */
-    const keyPositions = [];
+    for (const script of document.scripts) {
+      const text = script.textContent || "";
+
+      if (
+        text.includes("postSlugUrl") ||
+        text.includes("urn:li:activity:") ||
+        text.includes("FeedType_FLAGSHIP_SEARCH")
+      ) {
+        sources.push(text);
+      }
+    }
+
+    /*
+     * Fallback for LinkedIn builds where the state is present in the DOM
+     * serialization but not conveniently exposed as script.textContent.
+     */
+    try {
+      const html = document.documentElement.innerHTML;
+
+      if (html) {
+        sources.push(html);
+      }
+    } catch {
+      // Ignore serialization failures and continue with other fallbacks.
+    }
+
+    return sources;
+  }
+
+  function keyPositions(source, componentKey) {
+    const positions = [];
+
+    if (!source || !componentKey) {
+      return positions;
+    }
 
     let position = source.indexOf(componentKey);
 
     while (position !== -1) {
-      keyPositions.push(position);
-
+      positions.push(position);
       position = source.indexOf(componentKey, position + componentKey.length);
     }
 
-    if (!keyPositions.length) {
+    return positions;
+  }
+
+  function normalizedStateChunk(source, start, end) {
+    return source
+      .slice(start, end)
+      .replace(/\\u003a/gi, ":")
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\u002d/gi, "-")
+      .replace(/\\\//g, "/");
+  }
+
+  function findNearestPostSlugUrl(source, componentKey) {
+    const positions = keyPositions(source, componentKey);
+
+    if (!positions.length) {
+      return "";
+    }
+
+    let bestUrl = "";
+    let bestDistance = Infinity;
+
+    for (const keyPosition of positions) {
+      /*
+       * In LinkedIn's current SDUI payload the postSlugUrl is usually within
+       * a few KB of the matching component key. 30 KB leaves headroom while
+       * avoiding accidentally pairing the next/previous result.
+       */
+      const radius = 30000;
+      const start = Math.max(0, keyPosition - radius);
+      const end = Math.min(
+        source.length,
+        keyPosition + componentKey.length + radius,
+      );
+
+      const chunk = normalizedStateChunk(source, start, end);
+      const localKeyPosition = Math.max(0, keyPosition - start);
+      const regex = /https:\/\/www\.linkedin\.com\/posts\/[^"'\\\s<>]+/gi;
+
+      let match;
+
+      while ((match = regex.exec(chunk)) !== null) {
+        const distance = Math.abs(match.index - localKeyPosition);
+
+        if (distance < bestDistance) {
+          const normalized = normalizeLinkedInPostUrl(match[0]);
+
+          if (normalized) {
+            bestDistance = distance;
+            bestUrl = normalized;
+          }
+        }
+      }
+    }
+
+    return bestUrl;
+  }
+
+  function findNearestActivityUrn(source, componentKey) {
+    const positions = keyPositions(source, componentKey);
+
+    if (!positions.length) {
       return "";
     }
 
     let bestUrn = "";
     let bestDistance = Infinity;
 
-    for (const keyPosition of keyPositions) {
-      /*
-       * Large enough to contain the corresponding LinkedIn state
-       * object without accidentally searching the entire page.
-       */
-      const radius = 15000;
-
+    for (const keyPosition of positions) {
+      const radius = 30000;
       const start = Math.max(0, keyPosition - radius);
-
       const end = Math.min(
         source.length,
         keyPosition + componentKey.length + radius,
       );
-
       const chunk = source.slice(start, end);
-
       const localKeyPosition = keyPosition - start;
 
-      /*
-       * Normal unescaped activity URNs.
-       */
-      const activityRegex = /urn:li:activity:\d+/g;
+      const patterns = [
+        /urn:li:activity:\d+/g,
+        /urn%3Ali%3Aactivity%3A\d+/gi,
+      ];
 
-      let match;
+      for (const regex of patterns) {
+        let match;
 
-      while ((match = activityRegex.exec(chunk)) !== null) {
-        const distance = Math.abs(match.index - localKeyPosition);
+        while ((match = regex.exec(chunk)) !== null) {
+          const distance = Math.abs(match.index - localKeyPosition);
 
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestUrn = match[0];
-        }
-      }
+          if (distance < bestDistance) {
+            let urn = match[0];
 
-      /*
-       * Occasionally LinkedIn state can contain URL encoded URNs.
-       */
-      const encodedRegex = /urn%3Ali%3Aactivity%3A\d+/gi;
+            try {
+              urn = decodeURIComponent(urn);
+            } catch {
+              // Keep the original match.
+            }
 
-      while ((match = encodedRegex.exec(chunk)) !== null) {
-        const distance = Math.abs(match.index - localKeyPosition);
-
-        if (distance < bestDistance) {
-          bestDistance = distance;
-
-          try {
-            bestUrn = decodeURIComponent(match[0]);
-          } catch {
-            // Ignore malformed encoded values.
+            if (/^urn:li:activity:\d+$/i.test(urn)) {
+              bestDistance = distance;
+              bestUrn = urn;
+            }
           }
         }
       }
@@ -448,11 +568,46 @@
     return bestUrn;
   }
 
+  function postUrlFromPageState(root) {
+    const componentKey = getPostComponentKey(root);
+
+    if (!componentKey) {
+      return "";
+    }
+
+    const sources = pageStateSources();
+
+    /* Prefer LinkedIn's own canonical share slug. */
+    for (const source of sources) {
+      const slugUrl = findNearestPostSlugUrl(source, componentKey);
+
+      if (slugUrl) {
+        return slugUrl;
+      }
+    }
+
+    return "";
+  }
+
+  function activityUrnFromPageState(root) {
+    const componentKey = getPostComponentKey(root);
+
+    if (!componentKey) {
+      return "";
+    }
+
+    for (const source of pageStateSources()) {
+      const urn = findNearestActivityUrn(source, componentKey);
+
+      if (urn) {
+        return urn;
+      }
+    }
+
+    return "";
+  }
+
   function extractActivityUrn(root) {
-    /*
-     * Method 1:
-     * Older LinkedIn layouts expose the activity URN directly.
-     */
     const directUrn =
       root.getAttribute("data-urn") ||
       root.getAttribute("data-chameleon-result-urn") ||
@@ -464,65 +619,114 @@
       return directMatch[0];
     }
 
-    /*
-     * Method 2:
-     * Sometimes a direct feed/update anchor exists.
-     */
-    const directLink = root.querySelector(
-      'a[href*="/feed/update/urn:li:activity:"]',
-    );
+    const feedUrl = directFeedUpdateUrl(root);
 
-    if (directLink?.href) {
-      const match = directLink.href.match(/urn:li:activity:\d+/);
+    if (feedUrl) {
+      const match = feedUrl.match(/urn:li:activity:\d+/);
 
       if (match) {
         return match[0];
       }
     }
 
-    /*
-     * Method 3:
-     * Current 2026 LinkedIn SDUI search results.
-     *
-     * Match the rendered result's component key to the activity
-     * URN stored in LinkedIn's hydrated page state.
-     */
-    const componentKey = getPostComponentKey(root);
-
-    if (!componentKey) {
-      console.warn(
-        "[LinkedIn Extractor] No component key found for post:",
-        root,
-      );
-
-      return "";
-    }
-
-    /*
-     * innerHTML includes LinkedIn's hydration/state scripts.
-     */
-    const source = document.documentElement.innerHTML;
-
-    const activityUrn = findNearestActivityUrn(source, componentKey);
-
-    if (!activityUrn) {
-      console.warn(
-        "[LinkedIn Extractor] No activity URN mapped for component:",
-        componentKey,
-      );
-    }
-
-    return activityUrn;
+    return activityUrnFromPageState(root);
   }
 
-  function buildPostUrl(root) {
-    const activityUrn = extractActivityUrn(root);
+  async function postUrlFromMainWorld(root, timeout = 900) {
+    if (!root) return "";
 
-    if (!activityUrn) {
-      return "";
+    const requestId =
+      "liex-" +
+      Date.now().toString(36) +
+      "-" +
+      Math.random().toString(36).slice(2, 10);
+
+    root.setAttribute("data-liex-request-id", requestId);
+
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const cleanup = () => {
+        root.removeEventListener("liex-post-url-ready", onReady);
+        root.removeAttribute("data-liex-request-id");
+        root.removeAttribute("data-liex-post-url");
+      };
+
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(normalizeLinkedInPostUrl(value));
+      };
+
+      const onReady = () => {
+        finish(root.getAttribute("data-liex-post-url") || "");
+      };
+
+      root.addEventListener("liex-post-url-ready", onReady, { once: true });
+
+      try {
+        document.dispatchEvent(
+          new CustomEvent("liex-request-post-url", {
+            detail: { requestId },
+          }),
+        );
+      } catch {
+        finish("");
+        return;
+      }
+
+      setTimeout(() => finish(""), timeout);
+    });
+  }
+
+  async function buildPostUrl(root) {
+    /* 1) Older/current layouts may expose a canonical URL directly. */
+    const directCanonical = directCanonicalPostUrl(root);
+
+    if (directCanonical) {
+      return directCanonical;
     }
 
-    return "https://www.linkedin.com/feed/update/" + activityUrn + "/";
+    /*
+     * 2) Best non-interactive path for the supplied 2026 LinkedIn markup:
+     * LinkedIn embeds the actual /posts/... URL as postSlugUrl in its page
+     * state, associated with the same SDUI component key as the rendered card.
+     */
+    const stateSlug = postUrlFromPageState(root);
+
+    if (stateSlug) {
+      return stateSlug;
+    }
+
+    /*
+     * 3) If React has already consumed/removed the hydration payload, ask the
+     * MAIN-world bridge to inspect the page's live React props/fiber data.
+     */
+    const mainWorldUrl = await postUrlFromMainWorld(root);
+
+    if (mainWorldUrl) {
+      return mainWorldUrl;
+    }
+
+    /* 4) A direct /feed/update/ link is still a valid LinkedIn permalink. */
+    const directFeed = directFeedUpdateUrl(root);
+
+    if (directFeed) {
+      return directFeed;
+    }
+
+    /*
+     * 5) Last fallback: map the card to an activity URN and construct the
+     * LinkedIn feed/update permalink. No menu clicking or clipboard required.
+     */
+    const activityUrn = extractActivityUrn(root);
+
+    if (activityUrn) {
+      return "https://www.linkedin.com/feed/update/" + activityUrn + "/";
+    }
+
+    return "";
   }
 
   function isFeedPostRoot(el) {
@@ -662,7 +866,7 @@
        * NO THREE-DOT MENU.
        * NO USER FOCUS REQUIRED.
        */
-      const postUrl = buildPostUrl(root);
+      const postUrl = await buildPostUrl(root);
 
       console.log(
         "[LinkedIn Extractor]",
