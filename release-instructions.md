@@ -9,7 +9,13 @@
 Example for version 1.5.0:
 
 git add .
+
 git commit -m "Release v1.5.0"
+
+OR
+
+git commit -m "Fix release tag trigger"
+
 git push origin main
 git tag v1.5.0
 git push origin v1.5.0
