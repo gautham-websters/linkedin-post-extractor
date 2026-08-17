@@ -4,7 +4,8 @@ A Chrome extension for extracting post details directly from LinkedIn content se
 
 The extension runs on an open LinkedIn content search page, automatically scrolls through the results, collects post information, removes duplicates, handles reposts, and generates a new `.xlsx` file for every scrape.
 
-> This project is not affiliated with or endorsed by LinkedIn.
+>[!WARNING]
+>This project is not affiliated with or endorsed by LinkedIn.
 
 ---
 
