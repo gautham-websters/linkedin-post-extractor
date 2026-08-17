@@ -46,81 +46,63 @@ jobs:
 
           if [[ "$TAG_VERSION" != "$MANIFEST_VERSION" ]]; then
             echo "Release tag $GITHUB_REF_NAME does not match manifest.json version $MANIFEST_VERSION"
-            echo "Update manifest.json to $TAG_VERSION or push the matching tag."
             exit 1
           fi
 
-      - name: Validate manifest file references
-        shell: python
+      - name: Validate required extension files
+        shell: bash
         run: |
-          import json
-          from pathlib import Path
+          set -euo pipefail
 
-          manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
-          files = {"manifest.json"}
+          REQUIRED_FILES=(
+            manifest.json
+            background.js
+            content.js
+            minixlsx.js
+            offscreen.html
+            offscreen.js
+            page_bridge.js
+            popup.css
+            popup.html
+            popup.js
+          )
 
-          def add(value):
-              if isinstance(value, str) and value:
-                  files.add(value)
-              elif isinstance(value, dict):
-                  for item in value.values():
-                      add(item)
-              elif isinstance(value, list):
-                  for item in value:
-                      add(item)
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "Missing required extension file: $file"
+              exit 1
+            fi
+          done
 
-          action = manifest.get("action", {})
-          add(action.get("default_popup"))
-          add(action.get("default_icon"))
+          echo "All required extension files are present."
 
-          background = manifest.get("background", {})
-          add(background.get("service_worker"))
-          add(background.get("scripts"))
-
-          for script in manifest.get("content_scripts", []):
-              add(script.get("js"))
-              add(script.get("css"))
-
-          add(manifest.get("icons"))
-          add(manifest.get("options_page"))
-          add(manifest.get("options_ui", {}).get("page"))
-          add(manifest.get("side_panel", {}).get("default_path"))
-          add(manifest.get("devtools_page"))
-
-          missing = [name for name in sorted(files) if not Path(name).is_file()]
-          if missing:
-              print("The manifest references files that are missing:")
-              for name in missing:
-                  print(f"  - {name}")
-              raise SystemExit(1)
-
-          print("Manifest references are valid.")
-
-      - name: Build extension ZIP
+      - name: Build clean extension ZIP
         id: package
         shell: bash
         run: |
           set -euo pipefail
 
           VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="LinkedIn-Search-Post-Extractor-v${VERSION}.zip"
+          PACKAGE_NAME="LinkedIn-Post-Extractor-v${VERSION}.zip"
           STAGING_DIR="dist/extension"
 
           rm -rf dist
           mkdir -p "$STAGING_DIR"
 
-          rsync -a ./ "$STAGING_DIR/" \
-            --exclude='.git/' \
-            --exclude='.github/' \
-            --exclude='dist/' \
-            --exclude='node_modules/' \
-            --exclude='tests/' \
-            --exclude='test/' \
-            --exclude='docs/' \
-            --exclude='*.zip' \
-            --exclude='*.log' \
-            --exclude='.DS_Store' \
-            --exclude='README*'
+          REQUIRED_FILES=(
+            manifest.json
+            background.js
+            content.js
+            minixlsx.js
+            offscreen.html
+            offscreen.js
+            page_bridge.js
+            popup.css
+            popup.html
+            popup.js
+          )
+
+          cp "${REQUIRED_FILES[@]}" "$STAGING_DIR/"
 
           cd "$STAGING_DIR"
           zip -r -9 "../$PACKAGE_NAME" .
@@ -135,7 +117,7 @@ jobs:
       - name: Upload packaged extension as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LinkedIn-Search-Post-Extractor-v${{ steps.version.outputs.version }}
+          name: LinkedIn-Post-Extractor-v${{ steps.version.outputs.version }}
           path: ${{ steps.package.outputs.package }}
           if-no-files-found: error
           retention-days: 30
@@ -151,13 +133,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          cat > release-body.md <<EOF
+          ### Install
+          1. Download **$PACKAGE_NAME** from **Assets** below. Do not use GitHub's **Source code** ZIP.
+          2. Extract the ZIP.
+          3. Open \`chrome://extensions\`, enable **Developer mode**, click **Load unpacked**, and select the extracted folder.
+          EOF
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; replacing packaged ZIP."
             gh release upload "$RELEASE_TAG" "$PACKAGE_PATH" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "LinkedIn Post Extractor $RELEASE_TAG" \
+              --notes-file release-body.md
           else
             gh release create "$RELEASE_TAG" "$PACKAGE_PATH" \
-              --title "LinkedIn Search Post Extractor $RELEASE_TAG" \
-              --generate-notes
+              --title "LinkedIn Post Extractor $RELEASE_TAG" \
+              --notes-file release-body.md
           fi
 
           echo "Released $PACKAGE_NAME on $RELEASE_TAG"
