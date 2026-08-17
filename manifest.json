@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Search Post Extractor",
-  "version": "2.1",
+  "version": "2.2",
   "description": "User-triggered extraction of LinkedIn content search posts with auto-scroll, deduplication, reliable post permalinks, repost handling, and XLSX export.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["https://www.linkedin.com/*"],
